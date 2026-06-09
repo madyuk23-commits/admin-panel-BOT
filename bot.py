@@ -147,7 +147,7 @@ async def on_ready():
 
 @bot.tree.command(name="setrank", description="Выдать ранг игроку в Roblox")
 @app_commands.describe(
-    user_id="Roblox User ID игрока",
+    user_id="Roblox User ID игрока (число)",
     rank="Выберите ранг для выдачи"
 )
 @app_commands.choices(rank=RANK_CHOICES)
@@ -159,31 +159,35 @@ async def setrank(interaction: discord.Interaction, user_id: str, rank: app_comm
     except ValueError:
         embed = discord.Embed(
             title="❌ Ошибка",
-            description="User ID должен быть числом!",
+            description="User ID должен быть числом!\n\nКак получить Roblox ID: https://www.roblox.com/users/ВАШ_НИК/profile",
             color=discord.Color.red()
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    # Выдаём ранг
+    # Выдаём ранг (без поиска пользователя в Discord)
     await set_rank(user_id_int, rank.value, interaction.user.id)
     
-    # Пытаемся получить информацию о пользователе Discord (если он связан)
-    user = await bot.fetch_user(user_id_int) if user_id_int else None
-    user_mention = user.mention if user else f"`{user_id_int}`"
+    # Названия рангов для отображения
+    rank_names = {
+        "Moderator": "🔧 Модератор",
+        "Admin": "🛡️ Администратор",
+        "SeniorAdmin": "⭐ Ст. Администратор",
+        "Default": "👤 Игрок"
+    }
     
     embed = discord.Embed(
         title="✅ Ранг выдан",
-        description=f"Игрок {user_mention} получил ранг **{rank.name}**",
+        description=f"**Roblox ID:** `{user_id_int}`\n**Ранг:** {rank_names.get(rank.value, rank.value)}",
         color=discord.Color.green()
     )
     embed.add_field(name="Выдал", value=interaction.user.mention, inline=True)
-    embed.add_field(name="ID", value=str(user_id_int), inline=True)
-    embed.set_footer(text="Изменения вступают в силу при следующем заходе в игру")
+    embed.add_field(name="Дата", value=datetime.now().strftime("%d.%m.%Y %H:%M"), inline=True)
+    embed.set_footer(text="Изменения вступят в силу при следующем входе в игру")
     
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="getrank", description="Проверить ранг игрока")
+@bot.tree.command(name="getrank", description="Проверить ранг игрока в Roblox")
 @app_commands.describe(
     user_id="Roblox User ID игрока"
 )
@@ -210,10 +214,19 @@ async def getrank(interaction: discord.Interaction, user_id: str):
     
     rank_display = rank_names.get(rank, rank)
     
+    # Цвет для ранга
+    colors = {
+        "Moderator": discord.Color.green(),
+        "Admin": discord.Color.blue(),
+        "SeniorAdmin": discord.Color.red(),
+        "Default": discord.Color.light_gray()
+    }
+    color = colors.get(rank, discord.Color.gray())
+    
     embed = discord.Embed(
-        title="🎮 Ранг пользователя",
-        description=f"**User ID:** `{user_id_int}`\n**Ранг:** {rank_display}",
-        color=discord.Color.blue()
+        title="🎮 Информация о ранге",
+        description=f"**Roblox ID:** `{user_id_int}`\n**Ранг:** {rank_display}",
+        color=color
     )
     
     await interaction.response.send_message(embed=embed)
@@ -239,7 +252,7 @@ async def resetrank(interaction: discord.Interaction, user_id: str):
     
     embed = discord.Embed(
         title="🔄 Ранг сброшен",
-        description=f"Ранг пользователя `{user_id_int}` сброшен на **👤 Игрок**",
+        description=f"**Roblox ID:** `{user_id_int}`\nРанг сброшен на **👤 Игрок**",
         color=discord.Color.orange()
     )
     
@@ -260,16 +273,25 @@ async def listranks(interaction: discord.Interaction):
     embed.set_footer(text="Ранги выдаются через команду /setrank")
     await interaction.response.send_message(embed=embed)
 
-@bot.tree.command(name="userid", description="Получить свой Roblox User ID")
-async def userid(interaction: discord.Interaction, user: discord.User = None):
-    target = user or interaction.user
-    
+@bot.tree.command(name="findid", description="Как найти свой Roblox User ID")
+async def findid(interaction: discord.Interaction):
     embed = discord.Embed(
-        title="🆔 Discord User ID",
-        description=f"**{target.name}** → `{target.id}`",
+        title="🔍 Как найти свой Roblox User ID",
+        description="""
+        **Способ 1 (через профиль):**
+        1. Зайдите на roblox.com
+        2. Откройте свой профиль
+        3. Посмотрите на URL: `roblox.com/users/123456789/profile`
+        4. Цифры 123456789 - это ваш ID
+
+        **Способ 2 (в игре):**
+        1. Откройте Roblox Studio
+        2. Запустите игру (F5)
+        3. В консоли Output будет ваш User ID
+        """,
         color=discord.Color.blue()
     )
-    embed.set_footer(text="Этот ID нужно использовать в команде /setrank")
+    embed.set_footer(text="Используйте этот ID в команде /setrank")
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="stats", description="Показать статистику бота")
@@ -313,17 +335,17 @@ async def help_command(interaction: discord.Interaction):
         color=discord.Color.green()
     )
     embed.add_field(
-        name="/setrank <user_id> <ранг>",
+        name="/setrank <roblox_id> <ранг>",
         value="Выдать ранг игроку (требует права администратора)",
         inline=False
     )
     embed.add_field(
-        name="/getrank <user_id>",
+        name="/getrank <roblox_id>",
         value="Проверить ранг игрока",
         inline=False
     )
     embed.add_field(
-        name="/resetrank <user_id>",
+        name="/resetrank <roblox_id>",
         value="Сбросить ранг игрока (требует права администратора)",
         inline=False
     )
@@ -333,8 +355,8 @@ async def help_command(interaction: discord.Interaction):
         inline=False
     )
     embed.add_field(
-        name="/userid [пользователь]",
-        value="Получить Discord User ID (для выдачи ранга)",
+        name="/findid",
+        value="Как найти свой Roblox User ID",
         inline=False
     )
     embed.add_field(
