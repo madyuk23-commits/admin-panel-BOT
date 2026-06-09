@@ -24,6 +24,14 @@ async def init_db():
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        # Таблица для отслеживания принудительных обновлений
+        await db.execute('''
+            CREATE TABLE IF NOT EXISTS force_updates (
+                user_id INTEGER PRIMARY KEY,
+                force_update INTEGER DEFAULT 0,
+                last_force TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
         await db.commit()
 
 async def get_rank(user_id):
@@ -43,7 +51,29 @@ async def set_rank(user_id, rank, executor_id):
                 updated_at = CURRENT_TIMESTAMP
         ''', (user_id, rank, executor_id))
         await db.commit()
-    print(f"[BOT] Ранг {rank} выдан пользователю {user_id}")
+        
+        # Устанавливаем флаг принудительного обновления
+        await db.execute('''
+            INSERT INTO force_updates (user_id, force_update) 
+            VALUES (?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET 
+                force_update = 1,
+                last_force = CURRENT_TIMESTAMP
+        ''', (user_id,))
+        await db.commit()
+        
+    print(f"[BOT] Ранг {rank} выдан пользователю {user_id} (флаг обновления установлен)")
+
+async def get_force_update_flag(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute('SELECT force_update FROM force_updates WHERE user_id = ?', (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else 0
+
+async def clear_force_update_flag(user_id):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('UPDATE force_updates SET force_update = 0 WHERE user_id = ?', (user_id,))
+        await db.commit()
 
 app = Flask(__name__)
 
@@ -56,8 +86,29 @@ def api_get_rank():
     user_id = data.get('userId')
     if not user_id:
         return jsonify({"error": "Missing userId"}), 400
+    
     rank = asyncio.run_coroutine_threadsafe(get_rank(user_id), loop).result()
     return jsonify({"rank": rank, "success": True})
+
+@app.route('/api/check_update', methods=['POST'])
+def api_check_update():
+    data = request.json
+    api_key = request.headers.get('X-API-Key')
+    if api_key != SECRET_KEY:
+        return jsonify({"error": "Unauthorized"}), 401
+    user_id = data.get('userId')
+    if not user_id:
+        return jsonify({"error": "Missing userId"}), 400
+    
+    need_update = asyncio.run_coroutine_threadsafe(get_force_update_flag(user_id), loop).result()
+    
+    # Если нужно обновление, возвращаем текущий ранг и очищаем флаг
+    if need_update:
+        rank = asyncio.run_coroutine_threadsafe(get_rank(user_id), loop).result()
+        asyncio.run_coroutine_threadsafe(clear_force_update_flag(user_id), loop).result()
+        return jsonify({"need_update": True, "rank": rank, "success": True})
+    
+    return jsonify({"need_update": False, "success": True})
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
@@ -81,7 +132,7 @@ bot = RankBot()
 async def on_ready():
     print(f"✅ Бот запущен как {bot.user}")
     await init_db()
-    await bot.change_presence(activity=discord.Game(name="/setrank"))
+    await bot.change_presence(activity=discord.Game(name="/setrank | /update"))
 
 @bot.tree.command(name="setrank", description="Выдать ранг в Roblox")
 @app_commands.describe(user_id="Roblox User ID", rank="Ранг")
@@ -102,7 +153,40 @@ async def setrank(interaction: discord.Interaction, user_id: str, rank: app_comm
     await set_rank(user_id_int, rank.value, interaction.user.id)
     
     rank_names = {"Moderator": "🔧 Модератор", "Admin": "🛡️ Администратор", "SeniorAdmin": "⭐ Ст. Администратор", "Default": "👤 Игрок"}
-    await interaction.response.send_message(f"✅ Ранг **{rank_names[rank.value]}** выдан пользователю `{user_id_int}`")
+    await interaction.response.send_message(
+        f"✅ Ранг **{rank_names[rank.value]}** выдан пользователю `{user_id_int}`\n"
+        f"🔄 Игрок получит ранг в течение 10 секунд или используйте `/update` для мгновенного обновления"
+    )
+
+@bot.tree.command(name="update", description="Принудительно обновить ранг у игрока в игре")
+@app_commands.describe(user_id="Roblox User ID игрока")
+@app_commands.default_permissions(administrator=True)
+async def force_update(interaction: discord.Interaction, user_id: str):
+    try:
+        user_id_int = int(user_id)
+    except:
+        await interaction.response.send_message("❌ User ID должен быть числом!", ephemeral=True)
+        return
+    
+    # Устанавливаем флаг принудительного обновления
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute('''
+            INSERT INTO force_updates (user_id, force_update) 
+            VALUES (?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET 
+                force_update = 1,
+                last_force = CURRENT_TIMESTAMP
+        ''', (user_id_int,))
+        await db.commit()
+    
+    rank = await get_rank(user_id_int)
+    rank_names = {"Moderator": "🔧 Модератор", "Admin": "🛡️ Администратор", "SeniorAdmin": "⭐ Ст. Администратор", "Default": "👤 Игрок"}
+    
+    await interaction.response.send_message(
+        f"🔄 Запрос на обновление ранга отправлен для `{user_id_int}`\n"
+        f"🏆 Текущий ранг: **{rank_names.get(rank, rank)}**\n"
+        f"✅ Игрок получит обновление в течение 5 секунд"
+    )
 
 @bot.tree.command(name="getrank", description="Проверить ранг")
 async def getrank(interaction: discord.Interaction, user_id: str):
@@ -118,7 +202,12 @@ async def getrank(interaction: discord.Interaction, user_id: str):
 
 @bot.tree.command(name="findid", description="Как найти свой Roblox ID")
 async def findid(interaction: discord.Interaction):
-    await interaction.response.send_message("🔍 **Как найти Roblox ID:**\n1. Зайдите на roblox.com\n2. Откройте свой профиль\n3. В URL будет: users/123456789/profile\n4. 123456789 - ваш ID")
+    embed = discord.Embed(
+        title="🔍 Как найти Roblox ID",
+        description="1. Зайдите на roblox.com\n2. Откройте свой профиль\n3. Посмотрите на URL: `roblox.com/users/123456789/profile`\n4. Число 123456789 - ваш ID",
+        color=discord.Color.blue()
+    )
+    await interaction.response.send_message(embed=embed)
 
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
